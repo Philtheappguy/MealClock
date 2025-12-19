@@ -10,14 +10,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Debug repo layout
+        run: |
+          pwd
+          ls -la
+          echo "---- find project spec files ----"
+          find . -maxdepth 4 -name "project.y*" -print
+          echo "---- find swift files ----"
+          find . -maxdepth 3 -name "*.swift" -print | head -n 50
+          echo "---- show project.yml (if present) ----"
+          if [ -f project.yml ]; then sed -n '1,200p' project.yml; else echo "NO project.yml at repo root"; fi
+
       - name: Install XcodeGen
         run: |
           brew update
           brew install xcodegen
 
-      - name: Generate Xcode project
+      - name: Generate Xcode project (explicit spec)
         run: |
-          xcodegen generate
+          # Force XcodeGen to use the spec at repo root
+          xcodegen generate --spec project.yml
+
+      - name: List schemes
+        run: xcodebuild -list -project MealClock.xcodeproj
 
       - name: Build unsigned .app (iphoneos)
         run: |
@@ -26,6 +41,7 @@ jobs:
             -scheme MealClock \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -37,6 +53,7 @@ jobs:
           APP_PATH="build/Build/Products/Release-iphoneos/MealClock.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "App not found at $APP_PATH"
+            find build -maxdepth 6 -type d -name "*.app" -print || true
             exit 1
           fi
           rm -rf Payload MealClock.ipa
