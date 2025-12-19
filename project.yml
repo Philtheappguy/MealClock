@@ -1,0 +1,26 @@
+name: MealClock
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "14.0"
+
+targets:
+  MealClock:
+    type: application
+    platform: iOS
+    sources:
+      - path: MealClock
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.mealclock
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+    info:
+      properties:
+        CFBundleDisplayName: MealClock
+        UILaunchScreen:
+          UIColorName: ""
+        UIUserInterfaceStyle: Light
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
