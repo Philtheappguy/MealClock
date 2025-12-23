@@ -2,7 +2,7 @@ name: MealClock
 
 options:
   deploymentTarget:
-    iOS: "17.0"   # set this to <= your phone’s iOS version
+    iOS: "17.0"
 
 targets:
   MealClock:
@@ -19,7 +19,7 @@ targets:
     info:
       path: MealClock/Info.plist
       properties:
-          UILaunchStoryboardName: LaunchScreen
         CFBundleDisplayName: MealClock
+        UILaunchStoryboardName: LaunchScreen
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
