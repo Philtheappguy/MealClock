@@ -1,32 +1,38 @@
 name: MealClock
 
 options:
-  bundleIdPrefix: com.philtheappguy
-
-settings:
-  base:
-    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+  deploymentTarget:
+    iOS: "17.0"
 
 targets:
   MealClock:
     type: application
     platform: iOS
-    deploymentTarget: "17.0"
+
     sources:
       - path: MealClock
+        excludes:
+          - Assets.xcassets
+
     resources:
-      - path: LaunchScreen.storyboard
       - path: MealClock/Assets.xcassets
-    info:
-      path: MealClock/Info.plist
+      - path: LaunchScreen.storyboard
+
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.philtheappguy.MealClock
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-    scheme:
-      testTargets: []
-      gatherCoverageData: false
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.mealclock
+        SWIFT_VERSION: "5.0"
 
-configs:
-  Debug: debug
-  Release: release
+        # ✅ makes the app actually use MealClock/Assets.xcassets/AppIcon.appiconset
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+        # optional (only matters if you have AccentColor in Assets.xcassets)
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+
+    info:
+      path: MealClock/Info.plist
+      properties:
+        CFBundleDisplayName: MealClock
+        UILaunchStoryboardName: LaunchScreen
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
