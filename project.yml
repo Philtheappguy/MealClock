@@ -19,6 +19,7 @@ targets:
     info:
       path: MealClock/Info.plist
       properties:
+          UILaunchStoryboardName: LaunchScreen
         CFBundleDisplayName: MealClock
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
