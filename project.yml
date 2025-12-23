@@ -1,25 +1,30 @@
 name: MealClock
+
 options:
-  bundleIdPrefix: com.example
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "17.0"  # set this to <= your phone’s iOS version
 
 targets:
   MealClock:
     type: application
     platform: iOS
+
     sources:
       - path: MealClock
+
+    resources:
+      # Keep LaunchScreen.storyboard at repo root (per your repo layout)
+      - path: LaunchScreen.storyboard
+
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.mealclock
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"
+
     info:
-  path: MealClock/Info.plist
-  properties:
-    CFBundleDisplayName: MealClock
-    UILaunchStoryboardName: LaunchScreen
-    UIApplicationSceneManifest:
-      UIApplicationSupportsMultipleScenes: false
+      path: MealClock/Info.plist
+      properties:
+        CFBundleDisplayName: MealClock
+        UILaunchStoryboardName: LaunchScreen
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
