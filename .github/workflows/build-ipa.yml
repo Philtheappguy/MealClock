@@ -9,7 +9,7 @@ jobs:
   build:
     # NOTE: macos-14 defaults to Xcode 15.x which cannot open the project format
     # produced by recent XcodeGen (objectVersion 77). Use macos-15 (Xcode 16+).
-    runs-on: macos-15-arm64
+    runs-on: macos-15
 
     steps:
       - name: Checkout
