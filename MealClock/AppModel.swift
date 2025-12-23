@@ -1,190 +1,311 @@
 import Foundation
-import SwiftUI
 
+@MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var meals: [Meal] = []
     @Published private(set) var weeklySlotsByWeekday: [String: [MealSlot]] = [:]
     @Published private(set) var holidays: [Holiday] = []
-    @Published var settings: AppSettings = AppSettings()
+    @Published private(set) var settings: Settings = Settings()
+    @Published private(set) var dayLogs: [String: DayLog] = [:]
 
-    private let persistence = Persistence.shared
+    private let persistence: Persistence
+    private let calendar: Calendar = .current
 
-    func bootstrap() {
-        if let loaded = persistence.load() {
-            apply(state: loaded, saveAfter: false)
-        } else {
-            apply(state: .default, saveAfter: true)
-        }
-        rescheduleNotifications()
-    }
+    init(persistence: Persistence = .shared) {
+        self.persistence = persistence
 
-    // MARK: - State
-
-    private func apply(state: AppState, saveAfter: Bool) {
+        let state = persistence.load() ?? .default
         self.meals = state.meals
         self.weeklySlotsByWeekday = state.weeklySlotsByWeekday
         self.holidays = state.holidays
         self.settings = state.settings
+        self.dayLogs = state.dayLogs
 
-        if saveAfter { save() }
-        ensureMealAssignments()
-    }
+        normalizeSchedules()
 
-    private func ensureMealAssignments() {
-        // Optional convenience: if default schedule has nil meal IDs, assign first 3 meals.
-        if meals.isEmpty { return }
-        let mealIds = meals.map(\.id)
-        for key in weeklySlotsByWeekday.keys {
-            var slots = weeklySlotsByWeekday[key] ?? []
-            for i in slots.indices {
-                if slots[i].mealId == nil {
-                    slots[i].mealId = mealIds[min(i, mealIds.count - 1)]
+        if settings.notificationsEnabled {
+            Notify.scheduleNextDays(
+                daysAhead: 14,
+                meals: meals,
+                slotsForDate: { [weak self] date in
+                    self?.slots(for: date) ?? []
                 }
-            }
-            weeklySlotsByWeekday[key] = slots
+            )
         }
     }
+
+    // MARK: - Persistence
 
     private func save() {
-        let state = AppState(meals: meals,
-                             weeklySlotsByWeekday: weeklySlotsByWeekday,
-                             holidays: holidays,
-                             settings: settings)
+        let state = AppState(
+            meals: meals,
+            weeklySlotsByWeekday: weeklySlotsByWeekday,
+            holidays: holidays,
+            settings: settings,
+            dayLogs: dayLogs
+        )
         persistence.save(state)
-    }
-
-    // MARK: - Derived Schedule
-
-    func weekday(for date: Date, calendar: Calendar = .current) -> Weekday {
-        Weekday(rawValue: calendar.component(.weekday, from: date)) ?? .monday
-    }
-
-    func slots(for date: Date) -> [MealSlot] {
-        let dayOnly = DateOnly.from(date: date)
-        if let holiday = holidays.first(where: { $0.date == dayOnly }) {
-            return holiday.slots
-        }
-        let wd = weekday(for: date)
-        return weeklySlotsByWeekday[String(wd.rawValue)] ?? []
-    }
-
-    func plannedCalories(for date: Date) -> Int {
-        slots(for: date)
-            .compactMap { $0.resolvedMeal(in: meals)?.calories }
-            .reduce(0, +)
-    }
-
-    func consumedCaloriesSoFar(for date: Date, now: Date = Date()) -> Int {
-        let calendar = Calendar.current
-        let daySlots = slots(for: date).sorted(by: { $0.time < $1.time })
-        return daySlots
-            .filter { $0.time.date(on: date, calendar: calendar) <= now }
-            .compactMap { $0.resolvedMeal(in: meals)?.calories }
-            .reduce(0, +)
-    }
-
-    func nextMeal(after now: Date = Date()) -> (date: Date, slot: MealSlot)? {
-        let calendar = Calendar.current
-
-        for offset in 0..<8 { // search up to a week ahead
-            guard let day = calendar.date(byAdding: .day, value: offset, to: now) else { continue }
-            let daySlots = slots(for: day).sorted(by: { $0.time < $1.time })
-            for slot in daySlots {
-                let dt = slot.time.date(on: day, calendar: calendar)
-                if dt > now {
-                    return (day, slot)
-                }
-            }
-        }
-        return nil
     }
 
     // MARK: - Meals CRUD
 
     func addMeal(_ meal: Meal) {
         meals.append(meal)
+        meals.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         save()
-        rescheduleNotifications()
     }
 
     func updateMeal(_ meal: Meal) {
-        guard let idx = meals.firstIndex(where: { $0.id == meal.id }) else { return }
-        meals[idx] = meal
-        save()
-        rescheduleNotifications()
-    }
-
-    func deleteMeals(at offsets: IndexSet) {
-        let ids = offsets.map { meals[$0].id }
-        meals.remove(atOffsets: offsets)
-
-        // Clear any slot references
-        for key in weeklySlotsByWeekday.keys {
-            weeklySlotsByWeekday[key] = (weeklySlotsByWeekday[key] ?? []).map { slot in
-                var s = slot
-                if let mId = s.mealId, ids.contains(mId) { s.mealId = nil }
-                return s
-            }
+        if let i = meals.firstIndex(where: { $0.id == meal.id }) {
+            meals[i] = meal
+            meals.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            save()
         }
-        for i in holidays.indices {
-            holidays[i].slots = holidays[i].slots.map { slot in
-                var s = slot
-                if let mId = s.mealId, ids.contains(mId) { s.mealId = nil }
-                return s
+    }
+
+    func deleteMeal(_ mealId: UUID) {
+        meals.removeAll(where: { $0.id == mealId })
+
+        // Remove from any day plans
+        for (key, var log) in dayLogs {
+            for kind in MealKind.allCases {
+                if log.mealIds(for: kind).contains(mealId) {
+                    log.removeMeal(mealId, from: kind)
+
+                    // keep checked calories consistent with current selection
+                    if log.isChecked(kind) {
+                        let cals = plannedCalories(in: log, kind: kind)
+                        log.setChecked(kind, calories: cals)
+                    }
+                }
             }
+            dayLogs[key] = log
         }
 
         save()
-        rescheduleNotifications()
     }
 
-    // MARK: - Weekly Slots CRUD
 
-    func setSlots(_ slots: [MealSlot], for weekday: Weekday) {
-        weeklySlotsByWeekday[String(weekday.rawValue)] = slots.sorted(by: { $0.time < $1.time })
-        save()
-        rescheduleNotifications()
+    func deleteMeals(_ offsets: IndexSet) {
+        // Delete from highest to lowest index to be safe
+        for i in offsets.sorted(by: >) {
+            guard i < meals.count else { continue }
+            deleteMeal(meals[i].id)
+        }
     }
 
-    // MARK: - Holidays CRUD
+    // MARK: - Day planning (Home)
 
-    func addHoliday(name: String, date: DateOnly) {
-        let holiday = Holiday(name: name, date: date, slots: slots(for: date.asDate()))
-        holidays.append(holiday)
-        holidays.sort(by: { $0.date < $1.date })
-        save()
-        rescheduleNotifications()
+    func selectedMeals(for date: Date, kind: MealKind) -> [Meal] {
+        let log = dayLog(for: date)
+        let ids = log.mealIds(for: kind)
+        return ids.compactMap { id in meals.first(where: { $0.id == id }) }
     }
 
-    func updateHoliday(_ holiday: Holiday) {
-        guard let idx = holidays.firstIndex(where: { $0.id == holiday.id }) else { return }
-        holidays[idx] = holiday
-        holidays.sort(by: { $0.date < $1.date })
+    func addMeal(to date: Date, kind: MealKind, mealId: UUID) {
+        let key = dayKey(date)
+        var log = dayLogs[key] ?? DayLog()
+        log.addMeal(mealId, to: kind)
+
+        // If already checked, refresh snapshot calories
+        if log.isChecked(kind) {
+            let cals = plannedCalories(in: log, kind: kind)
+            log.setChecked(kind, calories: cals)
+        }
+
+        dayLogs[key] = log
         save()
-        rescheduleNotifications()
     }
 
-    func deleteHolidays(at offsets: IndexSet) {
-        holidays.remove(atOffsets: offsets)
+    func removeMeal(from date: Date, kind: MealKind, mealId: UUID) {
+        let key = dayKey(date)
+        var log = dayLogs[key] ?? DayLog()
+        log.removeMeal(mealId, from: kind)
+
+        // If checked, refresh snapshot calories
+        if log.isChecked(kind) {
+            let cals = plannedCalories(in: log, kind: kind)
+            log.setChecked(kind, calories: cals)
+        }
+
+        dayLogs[key] = log
         save()
-        rescheduleNotifications()
+    }
+
+    func isChecked(for date: Date, kind: MealKind) -> Bool {
+        dayLog(for: date).isChecked(kind)
+    }
+
+    func toggleChecked(for date: Date, kind: MealKind) {
+        let key = dayKey(date)
+        var log = dayLogs[key] ?? DayLog()
+        if log.isChecked(kind) {
+            log.setChecked(kind, calories: nil)
+        } else {
+            let cals = plannedCalories(in: log, kind: kind)
+            log.setChecked(kind, calories: cals)
+        }
+        dayLogs[key] = log
+        save()
+    }
+
+    func plannedCalories(for date: Date) -> Int {
+        let log = dayLog(for: date)
+        return MealKind.allCases.reduce(0) { total, kind in
+            total + plannedCalories(in: log, kind: kind)
+        }
+    }
+
+    func consumedCaloriesSoFar(for date: Date, now: Date = Date()) -> Int {
+        let log = dayLog(for: date)
+        return MealKind.allCases.reduce(0) { total, kind in
+            total + (log.checkedCaloriesByKind[kind.rawValue] ?? 0)
+        }
+    }
+
+    private func plannedCalories(in log: DayLog, kind: MealKind) -> Int {
+        let plannedMeals = log.mealIds(for: kind).compactMap { id in meals.first(where: { $0.id == id }) }
+        return plannedMeals.reduce(0) { $0 + $1.calories }
+    }
+
+    private func dayLog(for date: Date) -> DayLog {
+        dayLogs[dayKey(date)] ?? DayLog()
+    }
+
+    private func dayKey(_ date: Date) -> String {
+        // yyyy-MM-dd in current calendar/timezone
+        let d = calendar.startOfDay(for: date)
+        let comps = calendar.dateComponents([.year, .month, .day], from: d)
+        let y = comps.year ?? 1970
+        let m = comps.month ?? 1
+        let da = comps.day ?? 1
+        return String(format: "%04d-%02d-%02d", y, m, da)
+    }
+
+    // MARK: - Schedule (times only)
+
+    func slots(for date: Date) -> [MealSlot] {
+        if let holiday = holidays.first(where: { $0.matches(date, calendar: calendar) }) {
+            return normalizeSlots(holiday.slots)
+        }
+        let weekday = calendar.component(.weekday, from: date) // 1...7
+        return normalizeSlots(weeklySlotsByWeekday[String(weekday)] ?? [])
+    }
+
+    func updateWeeklyTime(weekday: Weekday, kind: MealKind, time: ClockTime) {
+        let key = String(weekday.rawValue)
+        var slots = normalizeSlots(weeklySlotsByWeekday[key] ?? [])
+        if let idx = slots.firstIndex(where: { $0.kind == kind }) {
+            slots[idx].time = time
+        }
+        weeklySlotsByWeekday[key] = slots
+        save()
+    }
+
+    func addHoliday(name: String, month: Int, day: Int) {
+        let slots = defaultSlots()
+        holidays.append(Holiday(name: name, month: month, day: day, slots: slots))
+        save()
+    }
+
+    func deleteHoliday(_ id: UUID) {
+        holidays.removeAll(where: { $0.id == id })
+        save()
+    }
+
+    func updateHolidayTime(holidayId: UUID, kind: MealKind, time: ClockTime) {
+        guard let i = holidays.firstIndex(where: { $0.id == holidayId }) else { return }
+        var slots = normalizeSlots(holidays[i].slots)
+        if let idx = slots.firstIndex(where: { $0.kind == kind }) {
+            slots[idx].time = time
+        }
+        holidays[i].slots = slots
+        save()
     }
 
     // MARK: - Settings
 
-    func updateSettings(_ newSettings: AppSettings) {
-        settings = newSettings
+    func setDailyCalorieGoal(_ goal: Int) {
+        settings.dailyCalorieGoal = max(0, goal)
         save()
-        rescheduleNotifications()
     }
 
-    // MARK: - Notifications
-
-    func rescheduleNotifications() {
-    Notify.scheduleNextDays(days: 30, settings: settings, meals: meals) { [weak self] date in
-        return self?.slots(for: date) ?? []
+    func setNotificationsEnabled(_ enabled: Bool) {
+        settings.notificationsEnabled = enabled
+        save()
+        if enabled {
+            Notify.requestPermissionIfNeeded()
+            Notify.scheduleNextDays(daysAhead: 14, meals: meals, slotsForDate: { [weak self] date in
+                self?.slots(for: date) ?? []
+            })
+        } else {
+            Notify.cancelAll()
+        }
     }
-}
 
+    // MARK: - Next meal
 
+    struct NextMeal: Hashable {
+        var date: Date
+        var kind: MealKind
+        var time: Date
+    }
+
+    func nextMeal(after now: Date = Date()) -> NextMeal? {
+        for offset in 0..<14 {
+            let day = calendar.date(byAdding: .day, value: offset, to: calendar.startOfDay(for: now)) ?? now
+            let daySlots = slots(for: day).sorted(by: { $0.time < $1.time })
+            for slot in daySlots {
+                let t = slot.time.asDate(on: day, calendar: calendar)
+                if t > now {
+                    return NextMeal(date: day, kind: slot.kind, time: t)
+                }
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Helpers
+
+    private func normalizeSchedules() {
+        // Weekly schedule
+        for weekday in 1...7 {
+            let key = String(weekday)
+            weeklySlotsByWeekday[key] = normalizeSlots(weeklySlotsByWeekday[key] ?? [])
+        }
+
+        // Holidays
+        for i in holidays.indices {
+            holidays[i].slots = normalizeSlots(holidays[i].slots)
+        }
+
+        save()
+    }
+
+    private func normalizeSlots(_ slots: [MealSlot]) -> [MealSlot] {
+        // Prefer explicit kind-matches, but support legacy saved arrays by index order.
+        var result: [MealSlot] = []
+        for (idx, kind) in MealKind.allCases.enumerated() {
+            if let existing = slots.first(where: { $0.kind == kind }) {
+                result.append(MealSlot(id: existing.id, kind: kind, time: existing.time, mealId: nil))
+            } else if idx < slots.count {
+                let legacy = slots[idx]
+                result.append(MealSlot(id: legacy.id, kind: kind, time: legacy.time, mealId: nil))
+            } else {
+                // fallback default times
+                result.append(defaultSlots()[idx])
+            }
+        }
+        // Keep stable order by MealKind
+        return result
+    }
+
+    private func defaultSlots() -> [MealSlot] {
+        [
+            MealSlot(kind: .breakfast, time: ClockTime(hour: 8, minute: 0)),
+            MealSlot(kind: .lunch, time: ClockTime(hour: 12, minute: 30)),
+            MealSlot(kind: .dinner, time: ClockTime(hour: 18, minute: 30)),
+            MealSlot(kind: .snack, time: ClockTime(hour: 15, minute: 30))
+        ]
+    }
 }

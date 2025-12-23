@@ -2,235 +2,313 @@ import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject var model: AppModel
-    @State private var selectedDay: Date = Date()
+
+    @State private var selectedDate: Date = Date()
+    @State private var showingPickerForKind: MealKind?
 
     var body: some View {
-        NavigationView {
-            List {
-                Section {
-                    WeekStrip(selectedDate: $selectedDay)
-                        .environmentObject(model)
-                        .listRowInsets(EdgeInsets())
-                        .padding(.vertical, 8)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Home")
+                        .font(.largeTitle.bold())
+                    Text(selectedDate.formatted(date: .complete, time: .omitted))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+
+                WeekStrip(selectedDate: $selectedDate)
+                    .padding(.horizontal)
+
+                CalorieProgressCard(day: selectedDate)
+                    .padding(.horizontal)
+
+                NextMealCard(now: Date())
+                    .padding(.horizontal)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Today’s picks")
+                        .font(.headline)
+                        .padding(.horizontal)
+
+                    ForEach(MealKind.allCases) { kind in
+                        MealTimeCard(
+                            kind: kind,
+                            time: timeFor(kind: kind),
+                            meals: model.selectedMeals(for: selectedDate, kind: kind),
+                            isChecked: model.isChecked(for: selectedDate, kind: kind),
+                            onToggleChecked: { model.toggleChecked(for: selectedDate, kind: kind) },
+                            onAdd: { showingPickerForKind = kind },
+                            onRemove: { mealId in
+                                model.removeMeal(from: selectedDate, kind: kind, mealId: mealId)
+                            }
+                        )
+                        .padding(.horizontal)
+                    }
+                }
+                .padding(.bottom, 24)
+            }
+        }
+        .sheet(item: $showingPickerForKind) { kind in
+            MealPickerSheet(
+                title: "Add to \(kind.title)",
+                meals: model.meals,
+                onPick: { meal in
+                    model.addMeal(to: selectedDate, kind: kind, mealId: meal.id)
+                }
+            )
+        }
+    }
+
+    private func timeFor(kind: MealKind) -> ClockTime? {
+        model.slots(for: selectedDate).first(where: { $0.kind == kind })?.time
+    }
+}
+
+// MARK: - Meal Time Card
+
+private struct MealTimeCard: View {
+    let kind: MealKind
+    let time: ClockTime?
+    let meals: [Meal]
+    let isChecked: Bool
+
+    let onToggleChecked: () -> Void
+    let onAdd: () -> Void
+    let onRemove: (UUID) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(kind.title, systemImage: kind.systemImage)
+                    .font(.headline)
+
+                Spacer()
+
+                if let time {
+                    Text(time.shortString)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                 }
 
-                Section("Today") {
-                    CalorieProgressCard(day: selectedDay)
-                        .environmentObject(model)
-                        .listRowInsets(EdgeInsets())
-                        .padding(.vertical, 8)
-
-                    NextMealCard()
-                        .environmentObject(model)
-                        .listRowInsets(EdgeInsets())
-                        .padding(.vertical, 8)
+                Button(action: onToggleChecked) {
+                    Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                        .font(.title3)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isChecked ? "Uncheck \(kind.title)" : "Check \(kind.title)")
+            }
 
-                Section("Schedule") {
-                    TodayScheduleList(day: selectedDay)
-                        .environmentObject(model)
+            if meals.isEmpty {
+                Text("No meals picked yet.")
+                    .foregroundStyle(.secondary)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(meals) { meal in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(meal.name)
+                                if !meal.macroSummary.isEmpty {
+                                    Text(meal.macroSummary)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            Spacer()
+
+                            Text("\(meal.calories) cal")
+                                .foregroundStyle(.secondary)
+
+                            Button {
+                                onRemove(meal.id)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.leading, 6)
+                            .accessibilityLabel("Remove \(meal.name)")
+                        }
+                    }
                 }
             }
-            .navigationTitle("MealClock")
+
+            Button(action: onAdd) {
+                Label("Add meal", systemImage: "plus")
+            }
+            .buttonStyle(.bordered)
         }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(uiColor: .secondarySystemBackground)))
+    }
+}
+
+// MARK: - Calorie Progress
+
+private struct CalorieProgressCard: View {
+    @EnvironmentObject var model: AppModel
+    let day: Date
+
+    var body: some View {
+        let goal = max(1, model.settings.dailyCalorieGoal)
+        let consumed = model.consumedCaloriesSoFar(for: day)
+        let fraction = min(Double(consumed) / Double(goal), 1.0)
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Calories")
+                    .font(.headline)
+                Spacer()
+                Text("\(consumed) / \(goal)")
+                    .foregroundStyle(.secondary)
+            }
+
+            ProgressView(value: fraction)
+
+            Text("Checked meals add to your total.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(uiColor: .secondarySystemBackground)))
+    }
+}
+
+// MARK: - Next Meal
+
+private struct NextMealCard: View {
+    @EnvironmentObject var model: AppModel
+    let now: Date
+
+    var body: some View {
+        let next = model.nextMeal(after: now)
+
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Next up")
+                .font(.headline)
+
+            if let next {
+                let meals = model.selectedMeals(for: next.date, kind: next.kind)
+                let subtitle: String = {
+                    if meals.isEmpty { return "No meal picked yet" }
+                    if meals.count == 1 { return meals[0].name }
+                    return "\(meals.count) meals"
+                }()
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(next.kind.title)
+                            .font(.title3.bold())
+                        Text(subtitle)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text(next.time.formatted(date: .omitted, time: .shortened))
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Text("No upcoming meal times.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Color(uiColor: .secondarySystemBackground)))
     }
 }
 
 // MARK: - Week Strip
 
-struct WeekStrip: View {
-    @EnvironmentObject var model: AppModel
+private struct WeekStrip: View {
     @Binding var selectedDate: Date
 
+    private let calendar: Calendar = .current
+
     var body: some View {
-        let calendar = Calendar.current
-        let start = calendar.startOfDay(for: Date())
-        let days = (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+        let today = calendar.startOfDay(for: Date())
+        let selected = calendar.startOfDay(for: selectedDate)
 
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(days, id: \.self) { day in
-                    let isSelected = calendar.isDate(day, inSameDayAs: selectedDate)
-                    let label = Formatters.weekdayShort(for: day)
-                    let dayNum = calendar.component(.day, from: day)
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(-3...10, id: \.self) { offset in
+                    let day = calendar.date(byAdding: .day, value: offset, to: today) ?? today
+                    let isSelected = calendar.isDate(day, inSameDayAs: selected)
+                    let label = labelFor(day: day)
 
-                    VStack(spacing: 6) {
+                    Button {
+                        selectedDate = day
+                    } label: {
                         Text(label)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text("\(dayNum)")
-                            .font(.headline)
-                            .frame(width: 40, height: 40)
-                            .background(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 12)
+                            .background(
+                                Capsule().fill(isSelected ? Color.accentColor.opacity(0.25) : Color(uiColor: .secondarySystemBackground))
+                            )
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture { selectedDate = day }
+                    .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.vertical, 2)
         }
+    }
+
+    private func labelFor(day: Date) -> String {
+        if calendar.isDateInToday(day) { return "Today" }
+        return day.formatted(.dateTime.weekday(.abbreviated).day())
     }
 }
 
-// MARK: - Cards
+// MARK: - Meal Picker Sheet
 
-struct CalorieProgressCard: View {
-    @EnvironmentObject var model: AppModel
-    var day: Date
+private struct MealPickerSheet: View {
+    let title: String
+    let meals: [Meal]
+    let onPick: (Meal) -> Void
 
-    var body: some View {
-        let now = Date()
-        let consumed = model.consumedCaloriesSoFar(for: day, now: now)
-        let planned = model.plannedCalories(for: day)
-        let rawGoal = model.settings.dailyCalorieGoal
-        let denom = rawGoal > 0 ? max(rawGoal, 1) : max(planned, 1)
-        let progress = min(Double(consumed) / Double(denom), 1.0)
+    @Environment(\.dismiss) private var dismiss
+    @State private var query: String = ""
 
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label("Calories", systemImage: "flame.fill")
-                Spacer()
-                Text(rawGoal > 0 ? "\(consumed) / \(rawGoal)" : "\(consumed) / \(planned)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-
-            ProgressView(value: progress)
-                .accentColor(.accentColor)
-
-            Text("Planned today: \(planned) kcal")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .padding(16)
-        .background(Color(UIColor.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    var filteredMeals: [Meal] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if q.isEmpty { return meals }
+        return meals.filter { $0.name.localizedCaseInsensitiveContains(q) }
     }
-}
-
-struct NextMealCard: View {
-    @EnvironmentObject var model: AppModel
 
     var body: some View {
-        let now = Date()
-        let next = model.nextMeal(after: now)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Next meal", systemImage: "timer")
-                Spacer()
-                if let next {
-                    Text(next.slot.time.display)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+        NavigationStack {
+            List {
+                if meals.isEmpty {
+                    ContentUnavailableView("No meals yet", systemImage: "fork.knife", description: Text("Add meals in the Meals tab first."))
                 } else {
-                    Text("—")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                    ForEach(filteredMeals) { meal in
+                        Button {
+                            onPick(meal)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(meal.name)
+                                    if !meal.macroSummary.isEmpty {
+                                        Text(meal.macroSummary)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Text("\(meal.calories) cal")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
             }
-
-            if let next {
-                let mealName = next.slot.resolvedMeal(in: model.meals)?.name ?? "Meal"
-                let mealCals = next.slot.resolvedMeal(in: model.meals)?.calories
-                Text(mealCals.map { "\(mealName) • \($0) kcal" } ?? mealName)
-                    .font(.headline)
-
-                CountdownText(targetDate: next.slot.time.date(on: next.date))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else {
-                Text("No more meals scheduled this week.")
-                    .foregroundColor(.secondary)
-                    .font(.subheadline)
-            }
-        }
-        .padding(16)
-        .background(Color(UIColor.secondarySystemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-    }
-}
-
-struct CountdownText: View {
-    var targetDate: Date
-    @State private var now: Date = Date()
-    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        let remaining = max(Int(targetDate.timeIntervalSince(now)), 0)
-        let hrs = remaining / 3600
-        let mins = (remaining % 3600) / 60
-        let secs = remaining % 60
-
-        return Group {
-            if remaining == 0 {
-                Text("It's meal time.")
-            } else if hrs > 0 {
-                Text("In \(hrs)h \(mins)m")
-            } else if mins > 0 {
-                Text("In \(mins)m \(secs)s")
-            } else {
-                Text("In \(secs)s")
-            }
-        }
-        .onReceive(timer) { t in
-            now = t
-        }
-    }
-}
-
-// MARK: - Schedule list
-
-struct TodayScheduleList: View {
-    @EnvironmentObject var model: AppModel
-    var day: Date
-
-    var body: some View {
-        let calendar = Calendar.current
-        let now = Date()
-        let slots = model.slots(for: day).sorted(by: { $0.time < $1.time })
-
-        if slots.isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "calendar.badge.exclamationmark")
-                    .font(.system(size: 28))
-                    .foregroundColor(.secondary)
-                Text("No meal times")
-                    .font(.headline)
-                Text("Add a weekly schedule in Setup.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 18)
-        } else {
-            ForEach(slots) { slot in
-                let dt = slot.time.date(on: day, calendar: calendar)
-                let isPast = dt <= now && calendar.isDate(day, inSameDayAs: now)
-                let meal = slot.resolvedMeal(in: model.meals)
-
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(slot.time.display)
-                            .font(.headline)
-
-                        Text(meal?.name ?? "Meal")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-
-                    Spacer()
-
-                    if let calories = meal?.calories {
-                        Text("\(calories) kcal")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-
-                    Image(systemName: isPast ? "checkmark.circle.fill" : "circle")
-                        .foregroundColor(isPast ? .green : .secondary)
+            .navigationTitle(title)
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always))
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
                 }
-                .padding(.vertical, 4)
             }
         }
     }

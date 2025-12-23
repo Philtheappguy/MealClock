@@ -2,75 +2,62 @@ import Foundation
 import UserNotifications
 
 enum Notify {
-    static let identifierPrefix = "mealclock.meal."
-
-    static func requestAuthorizationIfNeeded(completion: @escaping (Bool) -> Void) {
+    static func requestPermissionIfNeeded() {
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
-            switch settings.authorizationStatus {
-            case .authorized, .provisional:
-                completion(true)
-            case .denied:
-                completion(false)
-            case .notDetermined:
-                center.requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
-                    completion(granted)
-                }
-            @unknown default:
-                completion(false)
-            }
+            guard settings.authorizationStatus == .notDetermined else { return }
+            center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         }
     }
 
+    static func cancelAll() {
+        let center = UNUserNotificationCenter.current()
+        center.removeAllPendingNotificationRequests()
+    }
+
     static func scheduleNextDays(
-        days: Int,
+        daysAhead: Int,
         now: Date = Date(),
-        settings: AppSettings,
         meals: [Meal],
-        scheduleProvider: @escaping (Date) -> [MealSlot]
+        slotsForDate: @escaping (Date) -> [MealSlot]
     ) {
-        guard settings.notificationsEnabled else { return }
+        let center = UNUserNotificationCenter.current()
 
-        requestAuthorizationIfNeeded { ok in
-            guard ok else { return }
-            let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+                return
+            }
 
-            center.getPendingNotificationRequests { pending in
-                let toRemove = pending.map { $0.identifier }.filter { $0.hasPrefix(identifierPrefix) }
-                center.removePendingNotificationRequests(withIdentifiers: toRemove)
+            // Simple approach: clear and reschedule all MealClock notifications
+            cancelAll()
 
-                let calendar = Calendar.current
+            let calendar = Calendar.current
+            let start = calendar.startOfDay(for: now)
 
-                for offset in 0..<days {
-                    guard let day = calendar.date(byAdding: .day, value: offset, to: now) else { continue }
-                    let slots = scheduleProvider(day).sorted(by: { $0.time < $1.time })
+            for offset in 0..<max(0, daysAhead) {
+                guard let day = calendar.date(byAdding: .day, value: offset, to: start) else { continue }
+                let slots = slotsForDate(day).sorted(by: { $0.time < $1.time })
 
-                    for slot in slots {
-                        let mealName = slot.resolvedMeal(in: meals)?.name ?? "Meal"
-                        let mealCalories = slot.resolvedMeal(in: meals)?.calories
+                for slot in slots {
+                    let fireDate = slot.time.asDate(on: day, calendar: calendar)
+                    if fireDate <= now { continue }
 
-                        let base = slot.time.date(on: day, calendar: calendar)
-                        let fireDate = calendar.date(byAdding: .minute, value: -settings.notifyMinutesBefore, to: base) ?? base
-                        if fireDate < now { continue }
+                    let content = UNMutableNotificationContent()
+                    content.title = "MealClock"
 
-                        var comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: fireDate)
-                        comps.second = 0
-
-                        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
-
-                        let content = UNMutableNotificationContent()
-                        content.title = "Meal time"
-                        if let cals = mealCalories {
-                            content.body = "\(mealName) • \(cals) kcal"
-                        } else {
-                            content.body = mealName
-                        }
-                        content.sound = .default
-
-                        let id = "\(identifierPrefix)\(slot.id.uuidString).\(DateOnly.from(date: day).id)"
-                        let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
-                        center.add(request, withCompletionHandler: nil)
+                    if let meal = slot.resolvedMeal(in: meals) {
+                        content.body = "Time for \(slot.kind.title): \(meal.name)"
+                    } else {
+                        content.body = "Time for \(slot.kind.title)"
                     }
+                    content.sound = .default
+
+                    let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: fireDate)
+                    let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+
+                    let identifier = "MealClock-\(day.formatted(.dateTime.year().month().day()))-\(slot.kind.rawValue)-\(slot.time.hour)-\(slot.time.minute)"
+                    let req = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
+                    center.add(req)
                 }
             }
         }

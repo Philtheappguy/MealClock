@@ -2,132 +2,147 @@ import SwiftUI
 
 struct HolidaysView: View {
     @EnvironmentObject var model: AppModel
-    @State private var isAdding = false
-    @State private var editingHoliday: Holiday?
+    @State private var showingAdd: Bool = false
 
     var body: some View {
         List {
-            ForEach(model.holidays) { holiday in
-                Button {
-                    editingHoliday = holiday
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(holiday.name)
-                                .font(.headline)
-                            Text(holiday.date.display)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                        Text("\(holiday.slots.count) meals")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+            if model.holidays.isEmpty {
+                ContentUnavailableView("No holidays", systemImage: "calendar", description: Text("Add a holiday to override your normal meal times for that date."))
+            } else {
+                ForEach(model.holidays) { holiday in
+                    NavigationLink(holiday.name) {
+                        HolidayEditorView(holidayId: holiday.id)
+                    }
+                }
+                .onDelete { indexSet in
+                    for idx in indexSet {
+                        model.deleteHoliday(model.holidays[idx].id)
                     }
                 }
             }
-            .onDelete(perform: model.deleteHolidays)
-
-            if model.holidays.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "calendar.badge.plus")
-                        .font(.system(size: 28))
-                        .foregroundColor(.secondary)
-                    Text("No holidays yet")
-                        .font(.headline)
-                    Text("Add a holiday to override meal times for a specific date.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 18)
-            }
         }
         .navigationTitle("Holidays")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { isAdding = true } label: { Image(systemName: "plus") }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showingAdd = true
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
             }
         }
-        .sheet(isPresented: $isAdding) {
-            AddHolidaySheet { name, date in
-                model.addHoliday(name: name, date: date)
-            }
-        }
-        .sheet(item: $editingHoliday) { holiday in
-            HolidayEditorView(holiday: holiday)
-                .environmentObject(model)
+        .sheet(isPresented: $showingAdd) {
+            AddHolidaySheet(isPresented: $showingAdd)
         }
     }
 }
 
-struct AddHolidaySheet: View {
-    @Environment(\.dismiss) private var dismiss
+private struct HolidayEditorView: View {
+    @EnvironmentObject var model: AppModel
+    let holidayId: UUID
+
+    var holiday: Holiday? {
+        model.holidays.first(where: { $0.id == holidayId })
+    }
+
+    var body: some View {
+        if let holiday {
+            List {
+                Section {
+                    Text("\(holiday.month)/\(holiday.day)")
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text(holiday.name)
+                }
+
+                Section("Meal times") {
+                    ForEach(MealKind.allCases) { kind in
+                        HolidayTimeRow(
+                            title: kind.title,
+                            time: timeFor(kind: kind, holiday: holiday),
+                            onChange: { newTime in
+                                model.updateHolidayTime(holidayId: holidayId, kind: kind, time: newTime)
+                            }
+                        )
+                    }
+                }
+            }
+            .navigationTitle(holiday.name)
+            .navigationBarTitleDisplayMode(.inline)
+        } else {
+            ContentUnavailableView("Holiday not found", systemImage: "calendar.badge.exclamationmark")
+        }
+    }
+
+    private func timeFor(kind: MealKind, holiday: Holiday) -> ClockTime {
+        holiday.slots.first(where: { $0.kind == kind })?.time ?? ClockTime(hour: 12, minute: 0)
+    }
+}
+
+
+private struct HolidayTimeRow: View {
+    let title: String
+    let time: ClockTime
+    let onChange: (ClockTime) -> Void
+
+    private let calendar: Calendar = .current
+
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            DatePicker(
+                "",
+                selection: Binding(
+                    get: { dateFrom(time) },
+                    set: { newDate in
+                        let comps = calendar.dateComponents([.hour, .minute], from: newDate)
+                        onChange(ClockTime(hour: comps.hour ?? time.hour, minute: comps.minute ?? time.minute))
+                    }
+                ),
+                displayedComponents: .hourAndMinute
+            )
+            .labelsHidden()
+        }
+    }
+
+    private func dateFrom(_ t: ClockTime) -> Date {
+        calendar.date(from: DateComponents(hour: t.hour, minute: t.minute)) ?? Date()
+    }
+}
+
+private struct AddHolidaySheet: View {
+    @EnvironmentObject var model: AppModel
+    @Binding var isPresented: Bool
+
     @State private var name: String = ""
     @State private var date: Date = Date()
 
-    var onAdd: (String, DateOnly) -> Void
+    private let calendar: Calendar = .current
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section("Holiday") {
                     TextField("Name", text: $name)
                     DatePicker("Date", selection: $date, displayedComponents: .date)
                 }
             }
-            .navigationTitle("New Holiday")
+            .navigationTitle("Add Holiday")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") { isPresented = false }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add") {
-                        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { return }
-                        onAdd(trimmed, DateOnly.from(date: date))
-                        dismiss()
+                        let comps = calendar.dateComponents([.month, .day], from: date)
+                        model.addHoliday(name: name.isEmpty ? "Holiday" : name, month: comps.month ?? 1, day: comps.day ?? 1)
+                        isPresented = false
                     }
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
-    }
-}
-
-struct HolidayEditorView: View {
-    @EnvironmentObject var model: AppModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var holiday: Holiday
-
-    init(holiday: Holiday) {
-        _holiday = State(initialValue: holiday)
-    }
-
-    var body: some View {
-        List {
-            Section("Details") {
-                TextField("Name", text: $holiday.name)
-                DatePicker("Date", selection: Binding(
-                    get: { holiday.date.asDate() },
-                    set: { holiday.date = DateOnly.from(date: $0) }
-                ), displayedComponents: .date)
-            }
-
-            Section("Meal times") {
-                SlotEditorList(
-                    slots: holiday.slots,
-                    meals: model.meals,
-                    onChange: { holiday.slots = $0 }
-                )
-            }
-
-            Section {
-                Button("Save") {
-                    model.updateHoliday(holiday)
-                    dismiss()
-                }
-            }
-        }
-        .navigationTitle("Edit Holiday")
     }
 }

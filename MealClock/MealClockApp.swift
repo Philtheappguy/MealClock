@@ -8,10 +8,6 @@ struct MealClockApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
-                .preferredColorScheme(model.settings.theme.colorScheme)
-                .onAppear {
-                    model.bootstrap()
-                }
         }
     }
 }
