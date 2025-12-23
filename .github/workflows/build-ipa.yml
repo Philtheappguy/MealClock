@@ -1,86 +1,133 @@
-name: Build iOS IPA
+# .github/workflows/build-ipa.yml
+name: Build IPA
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
 
 jobs:
   build:
-    # NOTE: macos-14 defaults to Xcode 15.x which cannot open the project format
-    # produced by recent XcodeGen (objectVersion 77). Use macos-15 (Xcode 16+).
     runs-on: macos-15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16+
+      - name: Select Xcode 16.x (avoid Xcode_26 beta + avoid broken Xcode_16.app)
         shell: bash
         run: |
-          set -e
-          echo "Available Xcodes:" 
+          set -euo pipefail
+
+          echo "Available Xcodes:"
           ls -d /Applications/Xcode*.app || true
 
-          # Prefer Xcode 16.x explicitly to avoid accidentally selecting a beta (e.g., Xcode_26)
-          if ls /Applications/Xcode_16*.app >/dev/null 2>&1; then
-            XCODE_APP=$(ls -d /Applications/Xcode_16*.app | sort | tail -n 1)
+          # Prefer the newest *versioned* Xcode 16.x (e.g., Xcode_16.4.app), NOT the generic Xcode_16.app.
+          CANDIDATES=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | grep -v '^/Applications/Xcode_16\.app$' | sort -V || true)
+
+          if [ -n "${CANDIDATES}" ]; then
+            # Pick newest that actually has iPhoneOS.platform installed
+            XCODE_APP=""
+            while read -r app; do
+              if [ -d "$app/Contents/Developer/Platforms/iPhoneOS.platform" ]; then
+                XCODE_APP="$app"
+              fi
+            done <<< "${CANDIDATES}"
+
+            if [ -z "${XCODE_APP}" ]; then
+              echo "ERROR: Found Xcode_16*.app but none include iPhoneOS.platform" >&2
+              echo "${CANDIDATES}" >&2
+              exit 1
+            fi
           else
-            XCODE_APP=/Applications/Xcode.app
+            # Fallbacks
+            if [ -d "/Applications/Xcode_16.app" ]; then
+              XCODE_APP="/Applications/Xcode_16.app"
+            else
+              XCODE_APP="/Applications/Xcode.app"
+            fi
           fi
 
           echo "Selecting: $XCODE_APP"
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
-          xcodebuild -version
+          export DEVELOPER_DIR="$XCODE_APP/Contents/Developer"
 
-          # Guardrail: ensure we're not accidentally building with Xcode 15.x
+          xcodebuild -version
+          xcodebuild -showsdks || true
+
+          # Ensure first-launch components are initialized
+          sudo xcodebuild -runFirstLaunch || true
+
+          # Guardrail: ensure we're on Xcode 16+
           MAJOR=$(xcodebuild -version | head -n 1 | awk '{print $2}' | cut -d. -f1)
           if [ -z "$MAJOR" ] || [ "$MAJOR" -lt 16 ]; then
             echo "ERROR: This workflow requires Xcode 16+. Selected: $XCODE_APP" >&2
             exit 1
           fi
 
-      - name: Install XcodeGen
+          # Guardrail: ensure iOS platform exists (fixes "iOS 18.0 Platform Not Installed")
+          if [ ! -d "$DEVELOPER_DIR/Platforms/iPhoneOS.platform" ]; then
+            echo "ERROR: iPhoneOS.platform missing under selected Xcode: $DEVELOPER_DIR" >&2
+            exit 1
+          fi
+
+      - name: Install XcodeGen (Homebrew)
+        shell: bash
         run: |
-          brew update
-          brew install xcodegen
+          set -euo pipefail
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          xcodegen --version
 
       - name: Generate Xcode project
+        shell: bash
         run: |
-          xcodegen generate --spec project.yml
+          set -euo pipefail
+          if [ -f "project.yml" ]; then
+            xcodegen generate --spec project.yml
+          else
+            xcodegen generate
+          fi
+          ls -la
 
-      - name: Build (no code signing)
+      - name: Build (unsigned)
+        shell: bash
         run: |
+          set -euo pipefail
           xcodebuild \
             -project MealClock.xcodeproj \
             -scheme MealClock \
             -configuration Release \
             -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
+            -destination "generic/platform=iOS" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" \
+            build
 
-      - name: Package IPA
+      - name: Package as IPA (zip Payload/)
+        shell: bash
         run: |
-          set -e
-          APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" -print -quit)
-          echo "APP_PATH=$APP_PATH"
-          if [ -z "$APP_PATH" ]; then
-            echo "No .app found in build output" >&2
-            ls -la build/Build/Products || true
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/MealClock.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "ERROR: App not found at $APP_PATH" >&2
+            find build -maxdepth 5 -type d -name "*.app" -print || true
             exit 1
           fi
 
+          rm -rf Payload MealClock.ipa
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/
 
-          # Create IPA
-          /usr/bin/zip -r MealClock.ipa Payload
+          # An .ipa is just a zip containing Payload/<App>.app
+          ditto -c -k --sequesterRsrc --keepParent Payload MealClock.ipa
+          ls -lh MealClock.ipa
 
-      - name: Upload IPA
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: MealClock-ipa
           path: MealClock.ipa
+          if-no-files-found: error
+          retention-days: 7
