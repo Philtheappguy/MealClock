@@ -13,6 +13,9 @@ struct Meal: Identifiable, Codable, Hashable {
     var carbs: Int?
     var fat: Int?
 
+    // Optional notes
+    var notes: String? = nil
+
     var macroSummary: String {
         let p = protein ?? 0
         let c = carbs ?? 0

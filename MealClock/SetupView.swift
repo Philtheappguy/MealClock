@@ -29,8 +29,10 @@ struct SetupView: View {
                     }
                 }
 
-                Section("Notifications") {
+                Section {
                     Toggle("Meal reminders", isOn: $notificationsEnabled)
+                } header: {
+                    Text("Notifications")
                 } footer: {
                     Text("Reminders are scheduled using your meal times. You can change them above.")
                 }

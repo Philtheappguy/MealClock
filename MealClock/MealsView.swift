@@ -40,7 +40,7 @@ struct MealsView: View {
                 }
             }
             .sheet(isPresented: $isPresentingAdd) {
-                MealEditorView(meal: Meal(name: "", calories: 0, proteinGrams: nil, carbsGrams: nil, fatGrams: nil, notes: nil)) { newMeal in
+                MealEditorView(meal: Meal(name: "", calories: 0)) { newMeal in
                     model.addMeal(newMeal)
                 }
             }
@@ -80,16 +80,16 @@ struct MealEditorView: View {
 
                 Section("Macros (optional)") {
                     IntFieldRow(title: "Protein (g)", value: Binding(
-                        get: { meal.proteinGrams ?? 0 },
-                        set: { meal.proteinGrams = ($0 == 0 ? nil : $0) }
+                        get: { meal.protein ?? 0 },
+                        set: { meal.protein = ($0 == 0 ? nil : $0) }
                     ))
                     IntFieldRow(title: "Carbs (g)", value: Binding(
-                        get: { meal.carbsGrams ?? 0 },
-                        set: { meal.carbsGrams = ($0 == 0 ? nil : $0) }
+                        get: { meal.carbs ?? 0 },
+                        set: { meal.carbs = ($0 == 0 ? nil : $0) }
                     ))
                     IntFieldRow(title: "Fat (g)", value: Binding(
-                        get: { meal.fatGrams ?? 0 },
-                        set: { meal.fatGrams = ($0 == 0 ? nil : $0) }
+                        get: { meal.fat ?? 0 },
+                        set: { meal.fat = ($0 == 0 ? nil : $0) }
                     ))
                 }
 
