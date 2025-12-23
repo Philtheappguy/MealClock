@@ -17,9 +17,9 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.0"
     info:
-      properties:
-        CFBundleDisplayName: MealClock
-        UILaunchStoryboardName: LaunchScreen
-        UIUserInterfaceStyle: Light
-        UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
+  path: MealClock/Info.plist
+  properties:
+    CFBundleDisplayName: MealClock
+    UILaunchStoryboardName: LaunchScreen
+    UIApplicationSceneManifest:
+      UIApplicationSupportsMultipleScenes: false
