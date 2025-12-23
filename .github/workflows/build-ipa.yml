@@ -5,69 +5,45 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-14
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Select newest Xcode
-        run: |
-          echo "Available Xcodes:"
-          ls -d /Applications/Xcode*.app
-          XCODE_APP=$(ls -d /Applications/Xcode*.app | sort | tail -n 1)
-          echo "Selecting: $XCODE_APP"
-          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
-          xcodebuild -version
 
-      - name: Debug repo layout
+      - name: Select Xcode 16.4 (if available)
         run: |
-          pwd
-          ls -la
-          echo "---- find project spec files ----"
-          find . -maxdepth 4 -name "project.y*" -print
-          echo "---- find swift files ----"
-          find . -maxdepth 3 -name "*.swift" -print | head -n 50
-          echo "---- show project.yml (if present) ----"
-          if [ -f project.yml ]; then sed -n '1,200p' project.yml; else echo "NO project.yml at repo root"; fi
+          if [ -d "/Applications/Xcode_16.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app
+          fi
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: |
           brew update
           brew install xcodegen
 
-      - name: Generate Xcode project (explicit spec)
-        run: |
-          # Force XcodeGen to use the spec at repo root
-          xcodegen generate --spec project.yml
+      - name: Generate Xcode project
+        run: xcodegen generate
 
-      - name: List schemes
-        run: xcodebuild -list -project MealClock.xcodeproj
-
-      - name: Build unsigned .app (iphoneos)
+      - name: Build (unsigned)
         run: |
-          xcodebuild \
-            -project MealClock.xcodeproj \
-            -scheme MealClock \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            build
+          set -euo pipefail
+          xcodebuild             -project MealClock.xcodeproj             -scheme MealClock             -configuration Release             -sdk iphoneos             -destination "generic/platform=iOS"             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=""             build             
 
       - name: Package IPA
         run: |
+          set -euo pipefail
           APP_PATH="build/Build/Products/Release-iphoneos/MealClock.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "App not found at $APP_PATH"
-            find build -maxdepth 6 -type d -name "*.app" -print || true
+            ls -R build/Build/Products || true
             exit 1
           fi
           rm -rf Payload MealClock.ipa
           mkdir -p Payload
           cp -R "$APP_PATH" Payload/MealClock.app
-          zip -qry MealClock.ipa Payload
+          /usr/bin/zip -qry MealClock.ipa Payload
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
